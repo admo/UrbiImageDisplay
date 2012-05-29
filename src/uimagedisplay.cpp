@@ -21,7 +21,8 @@
 
 #include <algorithm>
 #include <string>
-#include <list>
+#include <map>
+//#include <iostream>
 
 #include <urbi/uobject.hh>
 
@@ -30,6 +31,8 @@
 
 #include <boost/noncopyable.hpp>
 #include <boost/thread.hpp>
+#include <boost/bind.hpp>
+#include <boost/foreach.hpp>
 
 using namespace std;
 using namespace cv;
@@ -38,48 +41,77 @@ using namespace boost;
 
 class HighGuiEventLoopSingleton: public noncopyable {
 private:
-	list<string> mUsedWindowNames;
+	typedef map<const UObject*, string> WindowNames;
+	typedef pair<const UObject*, string> WindowNamesPair;
+	WindowNames mUsedWindowNames;
 
-	HighGuiEventLoopSingleton() {}
+	HighGuiEventLoopSingleton();
 
 	void stopThreadFunction();
 	void threadFunction();
 	thread mThread;
 	mutex mMutex;
 
+	bool isUObject(const UObject*) const;
+	bool isWindowName(const string&) const;
+
 public:
-	~HighGuiEventLoopSingleton() { stopThreadFunction(); }
+	~HighGuiEventLoopSingleton();
 
 	static HighGuiEventLoopSingleton& getInstance();
-	bool registerWindow(const string& windowName);
-	void unregisterWindow(const string& windowName);
+	bool registerWindow(const UObject*, const string& windowName);
+	void unregisterWindow(const UObject*);
+
+	bool showImage(const UObject*, const Mat& image);
+
+	string getWindowName(const UObject*) const;
 };
 
+inline HighGuiEventLoopSingleton::HighGuiEventLoopSingleton() {
+//	cerr << "HighGuiEventLoopSingleton::HighGuiEventLoopSingleton" << endl;
+}
+
+HighGuiEventLoopSingleton::~HighGuiEventLoopSingleton() {
+//	cerr << "HighGuiEventLoopSingleton::~HighGuiEventLoopSingleton" << endl;
+
+	destroyAllWindows();
+	mUsedWindowNames.clear();
+	stopThreadFunction();
+}
+
 HighGuiEventLoopSingleton& HighGuiEventLoopSingleton::getInstance() {
+//	cerr << "HighGuiEventLoopSingleton::getInstance" << endl;
+
 	static HighGuiEventLoopSingleton instance;
 	return instance;
 }
 
-bool HighGuiEventLoopSingleton::registerWindow(const string& windowName) {
+bool HighGuiEventLoopSingleton::registerWindow(const UObject* uobject, const string& windowName) {
+//	cerr << "HighGuiEventLoopSingleton::registerWindow" << endl;
+
 	lock_guard<mutex> lockGuard(mMutex);
 
 	if (mUsedWindowNames.size() == 0)
 		mThread = thread(&HighGuiEventLoopSingleton::threadFunction, this);
 
-	if(std::find(mUsedWindowNames.begin(), mUsedWindowNames.end(), windowName) != mUsedWindowNames.end()) {
+	if(isUObject(uobject) || isWindowName(windowName) || windowName.size() == 0) {
 		return false;
 	}
 
 	namedWindow(windowName, CV_WINDOW_NORMAL | CV_WINDOW_KEEPRATIO);
-	mUsedWindowNames.push_back(windowName);
+	mUsedWindowNames.insert(WindowNamesPair(uobject, windowName));
 	return true;
 }
 
-void HighGuiEventLoopSingleton::unregisterWindow(const string& windowName) {
+void HighGuiEventLoopSingleton::unregisterWindow(const UObject* uobject) {
+//	cerr << "HighGuiEventLoopSingleton::unregisterWindow" << endl;
+
 	lock_guard<mutex> lockGuard(mMutex);
 
-	mUsedWindowNames.remove(windowName);
-	destroyWindow(windowName);
+	if (isUObject(uobject)) {
+		destroyWindow(mUsedWindowNames[uobject]);
+		mUsedWindowNames.erase(uobject);
+	}
 
 	if (mUsedWindowNames.size() == 0)
 		stopThreadFunction();
@@ -99,45 +131,82 @@ void HighGuiEventLoopSingleton::threadFunction() {
 }
 
 void HighGuiEventLoopSingleton::stopThreadFunction() {
+//	cerr << "HighGuiEventLoopSingleton::stopThreadFunction" << endl;
+
 	mThread.interrupt();
 	mThread.join();
 }
 
+bool HighGuiEventLoopSingleton::isUObject(const UObject* uobject) const {
+//	cerr << "HighGuiEventLoopSingleton::isUObject" << endl;
+
+	return (std::find_if(mUsedWindowNames.begin(), mUsedWindowNames.end(),
+			bind(equal_to<const UObject*>(),
+					bind(&WindowNames::value_type::first, _1), uobject)) != mUsedWindowNames.end());
+}
+
+bool HighGuiEventLoopSingleton::isWindowName(const string& windowName) const{
+//	cerr << "HighGuiEventLoopSingleton::isWindowName" << endl;
+
+	return (std::find_if(mUsedWindowNames.begin(), mUsedWindowNames.end(),
+			bind(equal_to<string>(),
+					bind(&WindowNames::value_type::second, _1), windowName)) != mUsedWindowNames.end());
+}
+
+bool HighGuiEventLoopSingleton::showImage(const UObject* uobject, const Mat& image) {
+//	cerr << "HighGuiEventLoopSingleton::showImage" << endl;
+
+	if (!isUObject(uobject))
+		return false;
+
+	lock_guard<mutex> lockGuard(mMutex);
+	imshow(mUsedWindowNames[uobject], image);
+
+	return true;
+}
+
+string HighGuiEventLoopSingleton::getWindowName(const UObject* uobject) const {
+//	cerr << "HighGuiEventLoopSingleton::getWindowName" << endl;
+
+	if (!isUObject(uobject))
+		return string();
+	else
+		return mUsedWindowNames.at(uobject);
+}
+
 class UImageDisplay: public urbi::UObject {
 private:
-	string mWindowName;
 public:
 	UImageDisplay(const string& s): UObject(s) { UBindFunction(UImageDisplay, init); }
 	void init(const string& windowName);
 
 	~UImageDisplay();
 
-	UVar image;
-	void show(UVar& src);
+	void show(UImage image);
 
 	// Getty
-	string windowName() const { return mWindowName; };
+	string windowName() const { return HighGuiEventLoopSingleton::getInstance().getWindowName(this); }
 };
 
 void UImageDisplay::init(const string& windowName) {
-	mWindowName = windowName;
 
-	if(!HighGuiEventLoopSingleton::getInstance().registerWindow(mWindowName))
+	if(!HighGuiEventLoopSingleton::getInstance().registerWindow(this, windowName))
 		throw runtime_error("Unable to create window");
 
 	UBindFunctions(UImageDisplay, show, windowName);
-	UBindVar(UImageDisplay, image);
-	UNotifyChange(image, &UImageDisplay::show);
 }
 
 UImageDisplay::~UImageDisplay() {
-	HighGuiEventLoopSingleton::getInstance().unregisterWindow(mWindowName);
+	HighGuiEventLoopSingleton::getInstance().unregisterWindow(this);
 }
 
-void UImageDisplay::show(UVar& src) {
-	Mat i(640, 480, CV_8UC3);
-	imshow(mWindowName, i);
-	waitKey(10);
+void UImageDisplay::show(UImage image) {
+	if (image.imageFormat != IMAGE_RGB)
+		throw runtime_error("Unsupported image type");
+
+	Mat bgrImage;
+	cvtColor(Mat(Size(image.width, image.height), CV_8UC3, image.data), bgrImage, CV_RGB2BGR);
+	HighGuiEventLoopSingleton::getInstance().showImage(this, bgrImage);
 }
 
 UStart(UImageDisplay);
