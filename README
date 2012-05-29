@@ -1,0 +1,25 @@
+Description:
+UImageDisplay is a module to display UImage content in window.
+It uses Highgui from OpenCV to manage graphical interface.
+This module covers functionality of Image widget from Gostai Lab,
+but I hope it consumes less resources.
+
+
+Requirement:
+ - Urbi SDK
+ - OpenCV
+ - Boost libraries
+UImageDsiplay was tested with Urbi SDK 2.7.4, OpenCV 2.3.1 and Boost 1.42.
+
+Module functions:
+UImageDisplay.new(string arg1) - constructor, create new window with name `arg1';
+UImageDisplay.show(UImage image) - show `image' in window;
+UImageDisplay.windowName() - get name of window;
+
+How to use in urbiscript:
+loadModule("uimagedisplay");
+var u = UImageDisplay.new("Window 1");
+var image = // get image from some source
+u.show(image);
+
+
