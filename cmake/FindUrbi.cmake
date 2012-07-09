@@ -221,8 +221,8 @@ macro(urbi_version)
         "[ ${CMAKE_CURRENT_LIST_FILE}:${CMAKE_CURRENT_LIST_LINE} ] "
         "urbi --version result: '${_urbi_result}'")
     endif(URBI_DEBUG)
-    string(REGEX REPLACE ".*(Urbi SDK version [^\n]*)\n.*" "\\1"
-      URBI_VERSION_STRING "${_urbi_err}")
+    string(REGEX REPLACE ".*(Urbi version [^\n]*)\n.*" "\\1"
+      URBI_VERSION_STRING "${_urbi_out}")
 
       message(STATUS
         "[ ${CMAKE_CURRENT_LIST_FILE}:${CMAKE_CURRENT_LIST_LINE} ] "
