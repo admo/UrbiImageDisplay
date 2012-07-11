@@ -16,13 +16,25 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 // Usage:
-// var u = UImageDisplay.new("Cam 0");
-// u.show(uimage);
+/*
+var u = UImageDisplay.new("Cam 0");
+var w = UImageDisplay.new("Cam 1");
+var c = UCamera.new(0);
+var d = UCamera.new(1);
+t:loop {
+sleep(50ms);
+u.show(c.image);
+w.show(d.image);
+},
+*/
 
 #include <algorithm>
 #include <string>
 #include <map>
+#include <list>
 //#include <iostream>
+
+#include <cassert>
 
 #include <urbi/uobject.hh>
 
@@ -41,23 +53,31 @@ using namespace boost;
 
 class HighGuiEventLoopSingleton: public noncopyable {
 public:
-	typedef struct _WindowData {
-		string name;
-		enum {toRegister, toUnregister, registered, unregistered} state;
-		bool operator ==(const struct _WindowData& windowData) const { return name == windowData.name; }
-		bool isUnregistered() const { return state == unregistered; }
-	} WindowData;
-	typedef map<const UObject*, WindowData> WindowNames;
-	typedef pair<const UObject*, WindowData> WindowNamesPair;
+
+	typedef struct _Task {
+		const UObject* uobject;
+		enum Type {toRegister, toUnregister, toShow} type;
+		const Mat image;
+		const string name;
+		_Task(const UObject* u, const string& n) : uobject(u), name(n), type(toRegister) {}
+		_Task(const UObject* u, const Mat& i) : uobject(u), image(i), type(toShow) {}
+		_Task(const UObject* u) : uobject(u), type(toUnregister) {}
+	} Task;
+
+	typedef map<const UObject*, string> WindowNames;
+	typedef pair<const UObject*, string> WindowNamesPair;
+	typedef list<Task> TaskList;
+
 	WindowNames mUsedWindowNames;
+	TaskList mTaskList;
 
 	HighGuiEventLoopSingleton();
 
 	void stopThreadFunction();
 	void threadFunction();
 	thread mThread;
-	mutex mHighGUIMutex;
-	mutex mRegisterWindowMutex;
+	mutable mutex mMutex;
+	condition_variable mCond;
 
 	bool isUObject(const UObject*) const;
 	bool isWindowName(const string&) const;
@@ -76,6 +96,7 @@ public:
 
 inline HighGuiEventLoopSingleton::HighGuiEventLoopSingleton() {
 //	cerr << "HighGuiEventLoopSingleton::HighGuiEventLoopSingleton" << endl;
+	mThread = thread(&HighGuiEventLoopSingleton::threadFunction, this);
 }
 
 HighGuiEventLoopSingleton::~HighGuiEventLoopSingleton() {
@@ -96,68 +117,83 @@ HighGuiEventLoopSingleton& HighGuiEventLoopSingleton::getInstance() {
 bool HighGuiEventLoopSingleton::registerWindow(const UObject* uobject, const string& windowName) {
 //	cerr << "HighGuiEventLoopSingleton::registerWindow" << endl;
 
-	lock_guard<mutex> lockGuard(mHighGUIMutex);
-
-	if (mUsedWindowNames.size() == 0)
-		mThread = thread(&HighGuiEventLoopSingleton::threadFunction, this);
+	lock_guard<mutex> lockGuard(mMutex);
 
 	if(isUObject(uobject) || isWindowName(windowName) || windowName.size() == 0) {
 		return false;
 	}
 
-	WindowData windowData = {windowName, WindowData::toRegister};
-	mUsedWindowNames.insert(WindowNamesPair(uobject, windowData));
-	mRegisterWindowMutex.unlock();
+	mTaskList.push_back(Task(uobject, windowName));
+
+	mCond.notify_one();
 	return true;
 }
 
 void HighGuiEventLoopSingleton::unregisterWindow(const UObject* uobject) {
 //	cerr << "HighGuiEventLoopSingleton::unregisterWindow" << endl;
 
-	lock_guard<mutex> lockGuard(mHighGUIMutex);
+	lock_guard<mutex> lockGuard(mMutex);
 
 	if (isUObject(uobject)) {
-		destroyWindow(mUsedWindowNames[uobject].name);
-		mUsedWindowNames.erase(uobject);
-		mRegisterWindowMutex.unlock();
+		mTaskList.push_back(Task(uobject));
 	}
 
-	if (mUsedWindowNames.size() == 0)
-		stopThreadFunction();
+	mCond.notify_one();
 }
 
-bool dupa(HighGuiEventLoopSingleton::WindowNamesPair d) {
-	return d.second.isUnregistered();
+bool HighGuiEventLoopSingleton::showImage(const UObject* uobject, const Mat& image) {
+//	cerr << "HighGuiEventLoopSingleton::showImage" << endl;
+
+	if (!isUObject(uobject))
+		return false;
+
+	lock_guard<mutex> lockGuard(mMutex);
+	mTaskList.push_back(Task(uobject, image));
+
+	mCond.notify_one();
+	return true;
+}
+
+string HighGuiEventLoopSingleton::getWindowName(const UObject* uobject) const {
+//	cerr << "HighGuiEventLoopSingleton::getWindowName" << endl;
+
+	lock_guard<mutex> lockGuard(mMutex);
+
+	if (!isUObject(uobject))
+		return string();
+	else
+		return mUsedWindowNames.at(uobject);
 }
 
 void HighGuiEventLoopSingleton::threadFunction() {
 	try {
+		unique_lock<mutex> uniqueLock(mMutex);
+
 		for(;;) {
-			this_thread::sleep(posix_time::milliseconds(10));
+			mCond.timed_wait(uniqueLock, posix_time::milliseconds(10));
 
-			lock_guard<mutex> lockGuard(mHighGUIMutex);
-
-			if(mRegisterWindowMutex.try_lock()) {
-				// Create new windows
-				for (WindowNames::iterator i = mUsedWindowNames.begin(); i != mUsedWindowNames.end(); ++i) {
-					switch(i->second.state) {
-					case WindowData::toRegister:
-						namedWindow(i->second.name, CV_WINDOW_NORMAL | CV_WINDOW_KEEPRATIO);
-						i->second.state = WindowData::registered;
-						break;
-					case WindowData::toUnregister:
-						destroyWindow(i->second.name);
-						i->second.state = WindowData::unregistered;
-						break;
-					case WindowData::registered:
-					case WindowData::unregistered:
-					default:
-						break;
-					}
+			BOOST_FOREACH(Task& i, mTaskList) {
+				switch(i.type) {
+				case Task::toRegister:
+					assert(! isUObject(i.uobject) || ! isWindowName(i.name) || ! i.name.size());
+					namedWindow(i.name, CV_WINDOW_NORMAL | CV_WINDOW_KEEPRATIO);
+					mUsedWindowNames.insert(WindowNamesPair(i.uobject, i.name));
+					break;
+				case Task::toUnregister:
+					assert(isUObject(i.uobject));
+					destroyWindow(mUsedWindowNames[i.uobject]);
+					mUsedWindowNames.erase(i.uobject);
+					break;
+				case Task::toShow:
+					assert(isUObject(i.uobject));
+					imshow(mUsedWindowNames[i.uobject], i.image);
+					break;
+				default:
+					throw runtime_error("Unsupported task type");
 				}
 			}
 
-			this_thread::interruption_point();
+			mTaskList.clear();
 
 			waitKey(1);
 		}
@@ -184,31 +220,9 @@ bool HighGuiEventLoopSingleton::isUObject(const UObject* uobject) const {
 bool HighGuiEventLoopSingleton::isWindowName(const string& windowName) const{
 //	cerr << "HighGuiEventLoopSingleton::isWindowName" << endl;
 
-	WindowData windowData = {windowName};
 	return (std::find_if(mUsedWindowNames.begin(), mUsedWindowNames.end(),
-			bind(equal_to<WindowData>(),
-					bind(&WindowNames::value_type::second, _1), windowData)) != mUsedWindowNames.end());
-}
-
-bool HighGuiEventLoopSingleton::showImage(const UObject* uobject, const Mat& image) {
-//	cerr << "HighGuiEventLoopSingleton::showImage" << endl;
-
-	if (!isUObject(uobject))
-		return false;
-
-	lock_guard<mutex> lockGuard(mHighGUIMutex);
-	imshow(mUsedWindowNames[uobject].name, image);
-
-	return true;
-}
-
-string HighGuiEventLoopSingleton::getWindowName(const UObject* uobject) const {
-//	cerr << "HighGuiEventLoopSingleton::getWindowName" << endl;
-
-	if (!isUObject(uobject))
-		return string();
-	else
-		return mUsedWindowNames.at(uobject).name;
+			bind(equal_to<string>(),
+					bind(&WindowNames::value_type::second, _1), windowName)) != mUsedWindowNames.end());
 }
 
 class UImageDisplay: public urbi::UObject {
