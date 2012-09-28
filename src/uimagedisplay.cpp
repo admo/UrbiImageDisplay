@@ -233,7 +233,7 @@ public:
 
 	~UImageDisplay();
 
-	void show(UImage image);
+	void show(UBinary image);
 
 	// Getty
 	string windowName() const { return HighGuiEventLoopSingleton::getInstance().getWindowName(this); }
@@ -251,13 +251,13 @@ UImageDisplay::~UImageDisplay() {
 	HighGuiEventLoopSingleton::getInstance().unregisterWindow(this);
 }
 
-void UImageDisplay::show(UImage image) {
-	if (image.imageFormat != IMAGE_RGB)
-		throw runtime_error("Unsupported image type");
-
-	Mat bgrImage;
-	cvtColor(Mat(Size(image.width, image.height), CV_8UC3, image.data), bgrImage, CV_RGB2BGR);
-	HighGuiEventLoopSingleton::getInstance().showImage(this, bgrImage);
+void UImageDisplay::show(UBinary image) {
+//	if (image.imageFormat != IMAGE_RGB)
+//		throw runtime_error("Unsupported image type");
+//
+//	Mat bgrImage;
+//	cvtColor(Mat(Size(image.width, image.height), CV_8UC3, image.data), bgrImage, CV_RGB2BGR);
+//	HighGuiEventLoopSingleton::getInstance().showImage(this, bgrImage);
 }
 
 UStart(UImageDisplay);
